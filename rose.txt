@@ -21243,3 +21243,262 @@ do
         end
     end)
 end
+-- ============================================================
+-- AUTO TP WHEN MIN JOINS  (append-at-EOF patch)
+-- Adds: Config.TpSettings.AutoTpOnMinJoin / AutoTpMinGen / AutoTpMinJoinDelay
+-- Adds: Teleport tab row "Auto TP When Min Joins" + Min Gen box
+-- Fires: existing _G.JAF_Retarget / tpToBestBrainrot to best brainrot of a
+--        joining player whose genValue >= Min Gen.
+-- ============================================================
+task.spawn(function()
+    local t0 = tick()
+    while tick() - t0 < 20 do
+        local ok = pcall(function()
+            return Config and Config.TpSettings
+                and _G.JustAFanSettingsUI
+                and _G.JustAFanSettingsUI.panel
+        end)
+        if ok then break end
+        task.wait(0.2)
+    end
+
+    if not (Config and Config.TpSettings) then return end
+
+    if Config.TpSettings.AutoTpOnMinJoin    == nil then Config.TpSettings.AutoTpOnMinJoin    = false end
+    if Config.TpSettings.AutoTpMinGen       == nil then Config.TpSettings.AutoTpMinGen       = "1m"  end
+    if Config.TpSettings.AutoTpMinJoinDelay == nil then Config.TpSettings.AutoTpMinJoinDelay = 0.5   end
+    pcall(SaveConfig)
+
+    if _G.JAF_AutoTpMinJoinConn then
+        pcall(function() _G.JAF_AutoTpMinJoinConn:Disconnect() end)
+        _G.JAF_AutoTpMinJoinConn = nil
+    end
+
+    local function _minGen()
+        local raw = Config.TpSettings.AutoTpMinGen
+        if type(raw) ~= "string" or raw == "" then return 0 end
+        local s = raw:gsub("%s", ""):lower()
+        local num, suf = s:match("^([%d%.]+)([kmb]?)$")
+        num = tonumber(num)
+        if not num or num < 0 then return 0 end
+        if suf == "k" then return num * 1e3
+        elseif suf == "m" then return num * 1e6
+        elseif suf == "b" then return num * 1e9 end
+        return num
+    end
+
+    local function _find(owner)
+        if not owner then return nil end
+        local th = _minGen()
+        local best, bestGen = nil, -math.huge
+        for _, a in ipairs(SharedState and SharedState.AllAnimalsCache or {}) do
+            if a and a.owner == owner and a.genValue and a.genValue >= th
+               and a.genValue > bestGen then
+                bestGen = a.genValue; best = a
+            end
+        end
+        if best then return best end
+        for _, w in ipairs(SharedState and SharedState.WalkingCache or {}) do
+            if w and w.owner == owner and w.genValue and w.genValue >= th
+               and w.genValue > bestGen then
+                bestGen = w.genValue; best = w
+            end
+        end
+        return best
+    end
+
+    local function _fire(plr)
+        if not SAB_LIVE() then return end
+        if not Config.TpSettings.AutoTpOnMinJoin then return end
+        if _G.JAF_TpActive or _G.isCloning then return end
+        if LocalPlayer:GetAttribute("Stealing") then return end
+        local delay = tonumber(Config.TpSettings.AutoTpMinJoinDelay) or 0.5
+        local name  = plr.Name
+        task.spawn(function()
+            task.wait(delay)
+            if not Config.TpSettings.AutoTpOnMinJoin then return end
+            if not Players:FindFirstChild(name) then return end
+            if _G.JAF_TpActive or _G.isCloning then return end
+            if LocalPlayer:GetAttribute("Stealing") then return end
+            local hit = _find(name)
+            if not hit then
+                local t1 = tick()
+                while tick() - t1 < 5 do
+                    task.wait(0.25)
+                    if not Players:FindFirstChild(name) then return end
+                    hit = _find(name)
+                    if hit then break end
+                end
+            end
+            if not hit then return end
+            manualTarget = hit
+            if SharedState and SharedState.SetManualTarget then SharedState.SetManualTarget(hit) end
+            if _G.JAF_Retarget then
+                pcall(_G.JAF_Retarget, hit)
+            elseif _G.tpToBestBrainrot then
+                pcall(_G.tpToBestBrainrot)
+            end
+        end)
+    end
+
+    _G.JAF_AutoTpMinJoinConn = Players.PlayerAdded:Connect(_fire)
+
+    local ui = _G.JustAFanSettingsUI
+    local panel = ui and ui.panel
+    if not (panel and panel.Parent) then return end
+
+    local function visibleScroll()
+        if not panel.Parent then return nil end
+        for _, d in ipairs(panel:GetDescendants()) do
+            if d:IsA("ScrollingFrame") and d.Visible and d.Parent then
+                local p = d.Parent
+                while p and p ~= panel do
+                    if p.Name == "Content" then return d end
+                    p = p.Parent
+                end
+            end
+        end
+        return nil
+    end
+
+    local function inject()
+        local ui2 = _G.JustAFanSettingsUI
+        if not (ui2 and ui2.panel) then return end
+        if ui2.panel:GetAttribute("JAF_AutoTpMinJoinInjected") then return end
+
+        if ui2.switchTab then pcall(ui2.switchTab, "tp") end
+        task.wait(0.15)
+
+        local tpS = visibleScroll()
+        if not tpS then return end
+
+        local maxOrder = 0
+        for _, c in ipairs(tpS:GetChildren()) do
+            if c:IsA("GuiObject") and c.LayoutOrder > maxOrder then
+                maxOrder = c.LayoutOrder
+            end
+        end
+        local oTog = maxOrder + 1
+        local oRow = maxOrder + 2
+        local oNote = maxOrder + 3
+
+        local surf = Theme.Surface
+        local textP = Theme.TextPrimary
+        local sh  = Theme.SurfaceHighlight
+        local accentText = _G.JAF_OnAccent and _G.JAF_OnAccent() or Color3.new(0,0,0)
+
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 40)
+        row.BackgroundColor3 = surf
+        row.BackgroundTransparency = 0.08
+        row.BorderSizePixel = 0
+        row.LayoutOrder = oTog
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
+
+        local lbl = Instance.new("TextLabel", row)
+        lbl.Size = UDim2.new(1, -50, 1, 0)
+        lbl.Position = UDim2.new(0, 11, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = "Auto TP When Min Joins"
+        lbl.Font = Enum.Font.GothamMedium
+        lbl.TextSize = 12
+        lbl.TextColor3 = textP
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextTruncate = Enum.TextTruncate.AtEnd
+
+        local sw = Instance.new("Frame", row)
+        sw.Size = UDim2.new(0, 36, 0, 20)
+        sw.Position = UDim2.new(1, -44, 0.5, -10)
+        sw.BorderSizePixel = 0
+        Instance.new("UICorner", sw).CornerRadius = UDim.new(1, 0)
+        local dot = Instance.new("Frame", sw)
+        dot.Size = UDim2.new(0, 14, 0, 14)
+        dot.BorderSizePixel = 0
+        Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+        local function paint()
+            local on = Config.TpSettings.AutoTpOnMinJoin == true
+            sw.BackgroundColor3 = on and Theme.Success or Color3.fromRGB(25,25,25)
+            dot.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+            dot.BackgroundColor3 = accentText
+        end
+        paint()
+
+        local swBtn = Instance.new("TextButton", sw)
+        swBtn.Size = UDim2.new(1, 0, 1, 0)
+        swBtn.BackgroundTransparency = 1
+        swBtn.Text = ""
+        swBtn.ZIndex = 4
+        local function toggle()
+            Config.TpSettings.AutoTpOnMinJoin = not (Config.TpSettings.AutoTpOnMinJoin == true)
+            SaveConfig()
+            paint()
+        end
+        if _G.JAF_OnTap then _G.JAF_OnTap(swBtn, toggle)
+        else swBtn.MouseButton1Click:Connect(toggle) end
+        row.Parent = tpS
+
+        local r2 = Instance.new("Frame", tpS)
+        r2.Size = UDim2.new(1, 0, 0, 36)
+        r2.BackgroundColor3 = surf
+        r2.BorderSizePixel = 0
+        r2.LayoutOrder = oRow
+        Instance.new("UICorner", r2).CornerRadius = UDim.new(0, 7)
+
+        local l2 = Instance.new("TextLabel", r2)
+        l2.Size = UDim2.new(0.6, 0, 0, 16)
+        l2.Position = UDim2.new(0, 10, 0, 10)
+        l2.BackgroundTransparency = 1
+        l2.Text = "Min Gen (join auto-TP)"
+        l2.Font = Enum.Font.GothamBold
+        l2.TextSize = 11
+        l2.TextColor3 = textP
+        l2.TextXAlignment = Enum.TextXAlignment.Left
+
+        local tb = Instance.new("TextBox", r2)
+        tb.Size = UDim2.new(0, 110, 0, 24)
+        tb.Position = UDim2.new(1, -118, 0.5, -12)
+        tb.BackgroundColor3 = sh
+        tb.BorderSizePixel = 0
+        tb.Text = tostring(Config.TpSettings.AutoTpMinGen or "1m")
+        tb.Font = Enum.Font.Gotham
+        tb.TextSize = 11
+        tb.TextColor3 = textP
+        tb.PlaceholderText = "e.g. 1m, 500k"
+        tb.ClearTextOnFocus = false
+        Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 5)
+        tb.FocusLost:Connect(function()
+            Config.TpSettings.AutoTpMinGen = tb.Text:gsub("%s","")
+            SaveConfig()
+        end)
+
+        local note = Instance.new("Frame", tpS)
+        note.Size = UDim2.new(1, 0, 0, 30)
+        note.BackgroundTransparency = 1
+        note.LayoutOrder = oNote
+        local nl = Instance.new("TextLabel", note)
+        nl.Size = UDim2.new(1, -14, 1, 0)
+        nl.Position = UDim2.new(0, 12, 0, 0)
+        nl.BackgroundTransparency = 1
+        nl.Text = "Fires an Auto TP to the best brainrot above Min Gen when a matching owner joins."
+        nl.Font = Enum.Font.Gotham
+        nl.TextSize = 10
+        nl.TextColor3 = Theme.TextSecondary
+        nl.TextXAlignment = Enum.TextXAlignment.Left
+        nl.TextWrapped = true
+        nl.TextTruncate = Enum.TextTruncate.AtEnd
+
+        ui2.panel:SetAttribute("JAF_AutoTpMinJoinInjected", true)
+    end
+
+    pcall(inject)
+    task.spawn(function()
+        while true do
+            task.wait(2)
+            local ui3 = _G.JustAFanSettingsUI
+            if ui3 and ui3.panel and not ui3.panel:GetAttribute("JAF_AutoTpMinJoinInjected") then
+                pcall(inject)
+            end
+        end
+    end)
+end)
